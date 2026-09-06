@@ -6,10 +6,10 @@ export const metadata: Metadata = {
   title: "Tesori Italia '900s",
   description: "Catalogo prodotti Tesori Italia '900s, veloce e ricercabile da CSV.",
   generator: 'v0.app',
-  icons: {
-    icon: [{ url: '/logo.jpg', type: 'image/jpeg' }],
-    apple: '/logo.jpg',
-  },
+icons: {
+  icon: [{ url: 'https://raw.githubusercontent.com/Prova6401/Tesori-italia-900/main/public/logo.jpg', type: 'image/jpeg' }],
+  apple: 'https://raw.githubusercontent.com/Prova6401/Tesori-italia-900/main/public/logo.jpg',
+ },
 }
 
 export const viewport: Viewport = {

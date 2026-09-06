@@ -23,6 +23,7 @@ import {
   Search,
   Sun,
   ShoppingBag,
+  Table,
   X,
 } from 'lucide-react'
 
@@ -38,6 +39,43 @@ type Product = {
   variants: string[]
 }
 type UserRole = 'manage' | 'customer' | null
+type CsvMapping = { id: string; title: string; description: string; price: string; quantity: string; category: string; images: string; variants: string }
+
+const CSV_FIELD_DEFS: { key: keyof CsvMapping; label: string; help?: string }[] = [
+  { key: 'id', label: 'ID annuncio', help: 'Opzionale. Se impostato, gli annunci con lo stesso ID vengono aggiornati; gli ID non presenti vengono creati. Senza colonna ID vengono sempre creati nuovi annunci.' },
+  { key: 'title', label: 'Titolo' },
+  { key: 'description', label: 'Descrizione' },
+  { key: 'price', label: 'Prezzo (€)' },
+  { key: 'quantity', label: 'Quantità' },
+  { key: 'category', label: 'Categoria' },
+  { key: 'images', label: 'Immagini (URL)', help: 'Più URL separati da | , ; o a capo.' },
+  { key: 'variants', label: 'Varianti', help: 'Più valori separati da | , ; o a capo.' },
+]
+
+function guessCsvColumn(columns: string[], patterns: RegExp[]) {
+  for (const pattern of patterns) {
+    const found = columns.find((column) => pattern.test(column))
+    if (found) return found
+  }
+  return ''
+}
+
+function guessCsvMapping(columns: string[]): CsvMapping {
+  return {
+    id: guessCsvColumn(columns, [/item\s*number/i, /^id$/i, /\bid\b/i, /codice|sku/i]),
+    title: guessCsvColumn(columns, [/title/i, /titolo/i, /^nome/i]),
+    description: guessCsvColumn(columns, [/description/i, /descrizione/i]),
+    price: guessCsvColumn(columns, [/price/i, /prezzo/i]),
+    quantity: guessCsvColumn(columns, [/quantity/i, /quantit[aà]/i, /stock|giacenza|disponibil/i]),
+    category: guessCsvColumn(columns, [/category/i, /categoria/i]),
+    images: guessCsvColumn(columns, [/picurl|pic\s*url|image|img|foto|immagin/i]),
+    variants: guessCsvColumn(columns, [/variation|variant|variante/i]),
+  }
+}
+
+function splitCsvList(value: string) {
+  return value.split(/[|\n;,]+/).map((item) => item.trim()).filter(Boolean)
+}
 
 declare global {
   interface Window {
@@ -156,6 +194,10 @@ export default function Page() {
   const [isParsing, setIsParsing] = useState(false)
   const [notice, setNotice] = useState('')
   const [isImportingZip, setIsImportingZip] = useState(false)
+  const [isPhotoChoiceOpen, setIsPhotoChoiceOpen] = useState(false)
+  const [isCsvMapOpen, setIsCsvMapOpen] = useState(false)
+  const [csvColumns, setCsvColumns] = useState<string[]>([])
+  const [csvRows, setCsvRows] = useState<CsvRow[]>([])
   const [pageSize, setPageSize] = useState(24)
   const [viewLayout, setViewLayout] = useState<'grid' | 'list'>('grid')
   const [columns, setColumns] = useState(4)
@@ -169,6 +211,8 @@ export default function Page() {
   const [userRole, setUserRole] = useState<UserRole>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const zipFileRef = useRef<HTMLInputElement>(null)
+  const zipLightFileRef = useRef<HTMLInputElement>(null)
+  const customCsvRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     void (async () => {
@@ -368,6 +412,63 @@ export default function Page() {
     }
   }
 
+  async function handleZipLight(file?: File) {
+    if (!canManage) { setNotice('Solo gli account manage possono caricare fotografie.'); return }
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setNotice('Seleziona un file ZIP valido con le cartelle degli annunci.')
+      return
+    }
+    if (!window.JSZip) {
+      setNotice('Il lettore ZIP non è ancora pronto. Riprova tra un istante.')
+      return
+    }
+    setIsImportingZip(true)
+    setNotice('Analisi del pacchetto foto light in corso…')
+    try {
+      const archive = await new window.JSZip().loadAsync(file)
+      const linksByFolder = new Map<string, string[]>()
+      for (const [path, entry] of Object.entries(archive.files)) {
+        if (entry.dir || !/\.txt$/i.test(path)) continue
+        const parts = path.split('/').filter(Boolean)
+        const folderId = (parts.length > 1 ? parts.at(-2) || '' : '').trim()
+        if (!folderId) continue
+        const text = await (entry as unknown as { async: (type: string) => Promise<string> }).async('string')
+        const urls = text.split(/[\s|,;]+/).map((url) => url.trim()).filter((url) => /^https?:\/\//i.test(url))
+        if (!urls.length) continue
+        const existing = linksByFolder.get(folderId) || []
+        for (const url of urls) if (!existing.includes(url)) existing.push(url)
+        linksByFolder.set(folderId, existing)
+      }
+
+      if (!linksByFolder.size) {
+        setNotice('Nessuna cartella con file .txt trovata nello ZIP. Ogni cartella deve avere come nome l’ID dell’annuncio e contenere un file .txt con i link delle foto.')
+        return
+      }
+
+      let attachedImages = 0
+      const matchedProducts = new Set<string>()
+      const nextProducts = products.map((product) => {
+        const urls = linksByFolder.get(product.id)
+        if (!urls || !urls.length) return product
+        attachedImages += urls.length
+        matchedProducts.add(product.id)
+        return { ...product, images: urls }
+      })
+
+      if (!matchedProducts.size) setNotice('Nessun ID cartella corrisponde agli annunci. Verifica che i nomi delle cartelle siano gli ID dei prodotti.')
+      else {
+        persist(nextProducts)
+        setNotice(`${attachedImages.toLocaleString('it-IT')} foto associate a ${matchedProducts.size.toLocaleString('it-IT')} prodotti tramite link (light).`)
+      }
+    } catch (error) {
+      console.error('[v0] Import ZIP light failed:', error)
+      setNotice('Impossibile leggere il file ZIP. Verifica che sia un archivio ZIP valido.')
+    } finally {
+      setIsImportingZip(false)
+    }
+  }
+
   async function resetCatalog() {
     if (!canManage) { setNotice('Solo gli account manage possono modificare gli articoli.'); return }
     if (!window.confirm('Rimuovere definitivamente gli articoli salvati?')) return
@@ -393,7 +494,7 @@ export default function Page() {
         <header className={`border-b border-border bg-card/80 backdrop-blur-xl ${isHeaderScrolled ? 'is-scrolled' : ''} ${isHeaderBrandCondensed ? 'is-brand-condensed' : ''}`}>
           <div className="mx-auto flex max-w-360 items-center justify-between gap-5 px-6 py-4 lg:px-10">
             <div className="flex min-w-0 items-center gap-3">
-              <Image src="/logo.jpg" alt="Tesori Italia '900s" width={48} height={48} priority className="brand-logo size-12 rounded-xl object-cover shadow-lg shadow-primary/20" />
+              <Image src="https://github.com/Prova6401/Tesori-italia-900/blob/main/public/logo.jpg?raw=true" alt="Tesori Italia '900s" width={48} height={48} priority className="brand-logo size-12 rounded-xl object-cover shadow-lg shadow-primary/20" />
               <div className="min-w-0"><h1 className="text-lg font-bold tracking-tight">Tesori Italia '900s</h1><p className="hidden text-xs text-muted-foreground sm:block">Oggetti scelti, storie da scoprire.</p></div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -401,7 +502,8 @@ export default function Page() {
               <button onClick={() => setIsCartOpen(true)} className="cart-button" aria-label="Apri carrello"><ShoppingBag className="size-4" /><span>{cart.length}</span></button>
               <AuthControls />
               <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => handleFile(event.target.files?.[0])} />
-              <input ref={zipFileRef} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => handleZip(event.target.files?.[0])} />
+              <input ref={zipFileRef} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => { handleZip(event.target.files?.[0]); event.target.value = '' }} />
+              <input ref={zipLightFileRef} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => { handleZipLight(event.target.files?.[0]); event.target.value = '' }} />
               {canManage && <button onClick={resetCatalog} disabled={!products.length} className="header-reset-button inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2.5 text-sm text-muted-foreground transition hover:border-destructive/60 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="size-4" /><span className="hidden sm:inline">Svuota</span></button>}
             </div>
           </div>
@@ -417,7 +519,7 @@ export default function Page() {
             <div className="view-control"><button type="button" className="header-view items-center gap-1.5 rounded-xl border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground transition hover:bg-muted" onClick={() => setIsViewOpen((open) => !open)} aria-expanded={isViewOpen}><LayoutGrid className="size-3.5" /> Vista</button>{isViewOpen && <ViewPanel pageSize={pageSize} setPageSize={setPageSize} viewLayout={viewLayout} setViewLayout={setViewLayout} columns={columns} setColumns={setColumns} cardDetails={cardDetails} setCardDetails={setCardDetails} />}</div>
             {canManage && <div className="manage-actions items-center gap-2">
               <button onClick={() => fileRef.current?.click()} className="cupertino-button cupertino-button-primary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold"><Plus className="size-4" />{isParsing ? 'Pubblicazione…' : 'Aggiungi annuncio'}</button>
-              <button onClick={() => zipFileRef.current?.click()} disabled={!products.length || isImportingZip} className="cupertino-button cupertino-button-secondary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"><ImageIcon className="size-4" />{isImportingZip ? 'Foto in corso…' : 'Aggiungi foto'}</button>
+              <button onClick={() => setIsPhotoChoiceOpen(true)} disabled={!products.length || isImportingZip} className="cupertino-button cupertino-button-secondary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"><ImageIcon className="size-4" />{isImportingZip ? 'Foto in corso…' : 'Aggiungi foto'}</button>
             </div>}
             {canManage && <button type="button" className="bulk-select-button" onClick={() => setSelectedIds(selectedIds.length === visible.length ? [] : visible.map((product) => product.id))}>{selectedIds.length === visible.length && visible.length ? 'Deseleziona pagina' : 'Seleziona pagina'}</button>}
           </div>
@@ -441,10 +543,16 @@ export default function Page() {
       </main>
       {selected && <ProductEditorModal product={selected} formatPrice={formatPrice} ebayUrl={ebayUrl} canManage={canManage} darkMode={isDarkMode} onSave={updateProduct} onDelete={deleteProduct} onAddToCart={addToCart} onClose={() => setSelected(null)} />}
       {isBulkEditOpen && <BulkEditPanel selectedCount={selectedIds.length} darkMode={isDarkMode} onApply={applyBulkEdit} onClose={() => setIsBulkEditOpen(false)} />}
+      {isPhotoChoiceOpen && <PhotoChoiceModal
+        darkMode={isDarkMode}
+        onClose={() => setIsPhotoChoiceOpen(false)}
+        onZip={() => { setIsPhotoChoiceOpen(false); zipFileRef.current?.click() }}
+        onZipLight={() => { setIsPhotoChoiceOpen(false); zipLightFileRef.current?.click() }}
+      />}
       {isCartOpen && <CartPage cart={cart} total={cartTotal} darkMode={isDarkMode} onRemove={removeFromCart} onClose={() => setIsCartOpen(false)} />}
       <nav className={`mobile-tab-bar ${isDarkMode ? 'mobile-dark' : ''}`} aria-label="Navigazione mobile"><button onClick={() => setIsMobileSearchOpen(true)}><Search /><span>Cerca</span></button><button onClick={() => setIsCartOpen(true)}><ShoppingBag /><span>Carrello</span><b>{cart.length}</b></button><button onClick={() => setIsMobileMoreOpen((open) => !open)}><MoreHorizontal /><span>Altro</span></button></nav>
       {isMobileSearchOpen && <div className={`mobile-search-overlay ${isDarkMode ? 'mobile-dark' : ''}`}><div className="mobile-search-top"><button onClick={() => setIsMobileSearchOpen(false)}><X /></button><label><Search /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cerca prodotti..." /></label></div><p>{filtered.length.toLocaleString('it-IT')} risultati</p></div>}
-      {isMobileMoreOpen && <div className={`mobile-more-sheet ${isDarkMode ? 'mobile-dark' : ''}`}><div className="mobile-more-grabber" /><div className="mobile-more-heading"><strong>Altre opzioni</strong><button onClick={() => setIsMobileMoreOpen(false)}><X /></button></div><label>Categoria<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">Tutte le categorie</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>Prezzo<select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value)}><option value="all">Tutti i prezzi</option><option value="under-25">Sotto 25 €</option><option value="25-100">25 - 100 €</option><option value="over-100">Oltre 100 €</option></select></label><label className="mobile-more-check"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} /> Solo disponibili</label><button onClick={() => { setIsViewOpen(true); setIsMobileMoreOpen(false) }}><LayoutGrid /> Vista</button>{canManage && <><button onClick={() => fileRef.current?.click()}><Plus /> Aggiungi annuncio</button><button onClick={() => zipFileRef.current?.click()}><ImageIcon /> Aggiungi foto</button><button onClick={resetCatalog}><RotateCcw /> Svuota</button><button onClick={() => setSelectedIds(visible.map((product) => product.id))}><List /> Seleziona pagina</button></>}</div>}
+      {isMobileMoreOpen && <div className={`mobile-more-sheet ${isDarkMode ? 'mobile-dark' : ''}`}><div className="mobile-more-grabber" /><div className="mobile-more-heading"><strong>Altre opzioni</strong><button onClick={() => setIsMobileMoreOpen(false)}><X /></button></div><label>Categoria<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">Tutte le categorie</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>Prezzo<select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value)}><option value="all">Tutti i prezzi</option><option value="under-25">Sotto 25 €</option><option value="25-100">25 - 100 €</option><option value="over-100">Oltre 100 €</option></select></label><label className="mobile-more-check"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} /> Solo disponibili</label><button onClick={() => { setIsViewOpen(true); setIsMobileMoreOpen(false) }}><LayoutGrid /> Vista</button>{canManage && <><button onClick={() => fileRef.current?.click()}><Plus /> Aggiungi annuncio</button><button onClick={() => { setIsPhotoChoiceOpen(true); setIsMobileMoreOpen(false) }}><ImageIcon /> Aggiungi foto</button><button onClick={resetCatalog}><RotateCcw /> Svuota</button><button onClick={() => setSelectedIds(visible.map((product) => product.id))}><List /> Seleziona pagina</button></>}</div>}
     </>
   )
 }
@@ -468,6 +576,36 @@ function BulkEditPanel({ selectedCount, darkMode, onApply, onClose }: { selected
   const [price, setPrice] = useState('')
   const [quantity, setQuantity] = useState('')
   return <div className={`editor-overlay ${darkMode ? 'editor-dark' : ''}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="bulk-editor" role="dialog" aria-modal="true"><div className="editor-heading"><div><p className="editor-kicker">Modifica di gruppo</p><h2>{selectedCount} annunci</h2></div><button onClick={onClose} aria-label="Chiudi"><X /></button></div><p className="editor-help">Compila solo i campi che vuoi applicare a tutti gli articoli selezionati.</p><label>Categoria<input value={category} onChange={(event) => setCategory(event.target.value)} placeholder="Lascia invariata" /></label><label>Prezzo unico (€)<input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="Lascia invariato" /></label><label>Quantità unica<input type="number" min="0" step="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="Lascia invariata" /></label><div className="editor-actions"><button onClick={onClose}>Annulla</button><button className="editor-save" onClick={() => onApply({ ...(category ? { category } : {}), ...(price ? { price: Number(price) } : {}), ...(quantity ? { quantity: Number(quantity) } : {}) })}>Applica modifiche</button></div></section></div>
+}
+
+function PhotoChoiceModal({ darkMode, onClose, onZip, onZipLight }: { darkMode: boolean; onClose: () => void; onZip: () => void; onZipLight: () => void }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return <div className={`editor-overlay ${darkMode ? 'editor-dark' : ''}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section className="bulk-editor" role="dialog" aria-modal="true" aria-label="Aggiungi foto">
+      <div className="editor-heading"><div><p className="editor-kicker">Aggiungi foto</p><h2>Come vuoi caricare?</h2></div><button onClick={onClose} aria-label="Chiudi"><X /></button></div>
+      <p className="editor-help">Scegli il metodo di caricamento delle fotografie.</p>
+      <div className="grid gap-3">
+        <button type="button" onClick={onZip} className="flex items-start gap-3 rounded-xl border border-border bg-background p-4 text-left transition hover:border-primary">
+          <FileUp className="mt-0.5 size-5 shrink-0 text-primary" />
+          <span>
+            <span className="block text-sm font-semibold text-foreground">Carica ZIP</span>
+            <span className="mt-1 block text-xs leading-5 text-muted-foreground">Archivio con le foto vere: le immagini vengono caricate su Supabase e associate agli annunci in base al titolo.</span>
+          </span>
+        </button>
+        <button type="button" onClick={onZipLight} className="flex items-start gap-3 rounded-xl border border-border bg-background p-4 text-left transition hover:border-primary">
+          <ImageIcon className="mt-0.5 size-5 shrink-0 text-primary" />
+          <span>
+            <span className="block text-sm font-semibold text-foreground">Carica ZIP light</span>
+            <span className="mt-1 block text-xs leading-5 text-muted-foreground">Archivio con una cartella per ogni ID annuncio. Ogni cartella contiene un file .txt con i link (PicURL) delle foto, che vengono associati al prodotto corrispondente.</span>
+          </span>
+        </button>
+      </div>
+    </section>
+  </div>
 }
 
 function ProductEditorModal({ product, formatPrice, ebayUrl, canManage, darkMode, onSave, onDelete, onAddToCart, onClose }: { product: Product; formatPrice: (price: number) => string; ebayUrl: (id: string) => string; canManage: boolean; darkMode: boolean; onSave: (product: Product) => Promise<void>; onDelete: (product: Product) => Promise<void>; onAddToCart: (product: Product) => void; onClose: () => void }) {
