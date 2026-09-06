@@ -39,7 +39,7 @@ jobs:
           static_site_generator: next
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile --ignore-workspace
 
       - name: Build with Next.js
         env:
