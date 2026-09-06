@@ -393,7 +393,7 @@ export default function Page() {
         <header className={`border-b border-border bg-card/80 backdrop-blur-xl ${isHeaderScrolled ? 'is-scrolled' : ''} ${isHeaderBrandCondensed ? 'is-brand-condensed' : ''}`}>
           <div className="mx-auto flex max-w-360 items-center justify-between gap-5 px-6 py-4 lg:px-10">
             <div className="flex min-w-0 items-center gap-3">
-              <Image src="/logo.jpg" alt="Tesori Italia '900s" width={48} height={48} priority className="brand-logo size-12 rounded-xl object-cover shadow-lg shadow-primary/20" />
+              <Image src="https://github.com/Prova6401/Tesori-italia-900/blob/main/public/logo.jpg?raw=true" alt="Tesori Italia '900s" width={48} height={48} priority className="brand-logo size-12 rounded-xl object-cover shadow-lg shadow-primary/20" />
               <div className="min-w-0"><h1 className="text-lg font-bold tracking-tight">Tesori Italia '900s</h1><p className="hidden text-xs text-muted-foreground sm:block">Oggetti scelti, storie da scoprire.</p></div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
