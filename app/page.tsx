@@ -23,6 +23,7 @@ import {
   Search,
   Sun,
   ShoppingBag,
+  Table,
   X,
 } from 'lucide-react'
 
@@ -38,6 +39,43 @@ type Product = {
   variants: string[]
 }
 type UserRole = 'manage' | 'customer' | null
+type CsvMapping = { id: string; title: string; description: string; price: string; quantity: string; category: string; images: string; variants: string }
+
+const CSV_FIELD_DEFS: { key: keyof CsvMapping; label: string; help?: string }[] = [
+  { key: 'id', label: 'ID annuncio', help: 'Opzionale. Se impostato, gli annunci con lo stesso ID vengono aggiornati; gli ID non presenti vengono creati. Senza colonna ID vengono sempre creati nuovi annunci.' },
+  { key: 'title', label: 'Titolo' },
+  { key: 'description', label: 'Descrizione' },
+  { key: 'price', label: 'Prezzo (€)' },
+  { key: 'quantity', label: 'Quantità' },
+  { key: 'category', label: 'Categoria' },
+  { key: 'images', label: 'Immagini (URL)', help: 'Più URL separati da | , ; o a capo.' },
+  { key: 'variants', label: 'Varianti', help: 'Più valori separati da | , ; o a capo.' },
+]
+
+function guessCsvColumn(columns: string[], patterns: RegExp[]) {
+  for (const pattern of patterns) {
+    const found = columns.find((column) => pattern.test(column))
+    if (found) return found
+  }
+  return ''
+}
+
+function guessCsvMapping(columns: string[]): CsvMapping {
+  return {
+    id: guessCsvColumn(columns, [/item\s*number/i, /^id$/i, /\bid\b/i, /codice|sku/i]),
+    title: guessCsvColumn(columns, [/title/i, /titolo/i, /^nome/i]),
+    description: guessCsvColumn(columns, [/description/i, /descrizione/i]),
+    price: guessCsvColumn(columns, [/price/i, /prezzo/i]),
+    quantity: guessCsvColumn(columns, [/quantity/i, /quantit[aà]/i, /stock|giacenza|disponibil/i]),
+    category: guessCsvColumn(columns, [/category/i, /categoria/i]),
+    images: guessCsvColumn(columns, [/picurl|pic\s*url|image|img|foto|immagin/i]),
+    variants: guessCsvColumn(columns, [/variation|variant|variante/i]),
+  }
+}
+
+function splitCsvList(value: string) {
+  return value.split(/[|\n;,]+/).map((item) => item.trim()).filter(Boolean)
+}
 
 declare global {
   interface Window {
@@ -157,6 +195,9 @@ export default function Page() {
   const [notice, setNotice] = useState('')
   const [isImportingZip, setIsImportingZip] = useState(false)
   const [isPhotoChoiceOpen, setIsPhotoChoiceOpen] = useState(false)
+  const [isCsvMapOpen, setIsCsvMapOpen] = useState(false)
+  const [csvColumns, setCsvColumns] = useState<string[]>([])
+  const [csvRows, setCsvRows] = useState<CsvRow[]>([])
   const [pageSize, setPageSize] = useState(24)
   const [viewLayout, setViewLayout] = useState<'grid' | 'list'>('grid')
   const [columns, setColumns] = useState(4)
@@ -171,6 +212,7 @@ export default function Page() {
   const fileRef = useRef<HTMLInputElement>(null)
   const zipFileRef = useRef<HTMLInputElement>(null)
   const zipLightFileRef = useRef<HTMLInputElement>(null)
+  const customCsvRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     void (async () => {
