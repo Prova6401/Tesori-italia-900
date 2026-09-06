@@ -16,7 +16,6 @@ import {
   LayoutGrid,
   List,
   MoreHorizontal,
-  UserRound,
   Moon,
   Plus,
   RotateCcw,
@@ -149,34 +148,55 @@ function parseNumber(value: string | undefined, integer = false) {
   return Number.isFinite(parsed) ? (integer ? Math.max(0, Math.round(parsed)) : parsed) : 0
 }
 
-function normalizeRows(rows: CsvRow[]): Product[] {
+function normalizeRows(rows: CsvRow[], mapping: CsvMapping): Product[] {
   const grouped = new Map<string, Product>()
-  for (const row of rows) {
-    const id = (row['Item number'] || row['Item Number'] || row['item number'] || '').trim()
-    if (!id) continue
-    const price = parseNumber(row['Start price'] || row['Current price'])
-    const images = (row.PicURL || '').split('|').map((url) => url.trim()).filter(Boolean)
-    const variant = (row['Variation details'] || '').trim()
+  for (const [rowIndex, row] of rows.entries()) {
+    const value = (key: keyof CsvMapping) => mapping[key] ? (row[mapping[key]] || '').trim() : ''
+    const sourceId = value('id')
+    const id = sourceId || `custom-${Date.now()}-${rowIndex}-${Math.random().toString(36).slice(2, 8)}`
+    const price = parseNumber(value('price'))
+    const images = splitCsvList(value('images'))
+    const variants = splitCsvList(value('variants'))
     const existing = grouped.get(id)
     if (existing) {
-      existing.quantity += parseNumber(row['Available quantity'], true)
-      if (variant && !existing.variants.includes(variant)) existing.variants.push(variant)
+      existing.quantity += parseNumber(value('quantity'), true)
+      for (const variant of variants) if (!existing.variants.includes(variant)) existing.variants.push(variant)
       for (const image of images) if (!existing.images.includes(image)) existing.images.push(image)
       if (!existing.price && price) existing.price = price
       continue
     }
     grouped.set(id, {
       id,
-      title: (row.Title || 'Prodotto senza titolo').trim(),
-      description: (row.Description || row['Item description'] || row['Description'] || '').trim(),
+      title: value('title') || 'Prodotto senza titolo',
+      description: value('description'),
       price,
-      quantity: parseNumber(row['Available quantity'], true),
-      category: (row['eBay category 1 name'] || 'Senza categoria').trim(),
+      quantity: parseNumber(value('quantity'), true),
+      category: value('category') || 'Senza categoria',
       images,
-      variants: variant ? [variant] : [],
+      variants,
     })
   }
   return [...grouped.values()]
+}
+
+function mergeImportedProducts(current: Product[], imported: Product[], mapping: CsvMapping) {
+  const importedById = new Map(imported.map((product) => [product.id, product]))
+  const updated = current.map((product) => {
+    const next = importedById.get(product.id)
+    if (!next) return product
+    return {
+      ...product,
+      ...(mapping.title ? { title: next.title } : {}),
+      ...(mapping.description ? { description: next.description } : {}),
+      ...(mapping.price ? { price: next.price } : {}),
+      ...(mapping.quantity ? { quantity: next.quantity } : {}),
+      ...(mapping.category ? { category: next.category } : {}),
+      ...(mapping.images ? { images: next.images } : {}),
+      ...(mapping.variants ? { variants: next.variants } : {}),
+    }
+  })
+  const existingIds = new Set(current.map((product) => product.id))
+  return [...updated, ...imported.filter((product) => !existingIds.has(product.id))]
 }
 
 export default function Page() {
@@ -230,17 +250,18 @@ export default function Page() {
 
   useEffect(() => {
     if (!supabase) return
+    const client = supabase
     let active = true
     const loadRole = async (userId?: string) => {
       if (!userId) {
         if (active) setUserRole(null)
         return
       }
-      const { data } = await supabase.from('profiles').select('role').eq('id', userId).maybeSingle()
+      const { data } = await client.from('profiles').select('role').eq('id', userId).maybeSingle()
       if (active) setUserRole(data?.role === 'manage' ? 'manage' : 'customer')
     }
-    void supabase.auth.getUser().then(({ data }) => loadRole(data.user?.id))
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => { void loadRole(session?.user?.id) })
+    void client.auth.getUser().then(({ data }) => loadRole(data.user?.id))
+    const { data: listener } = client.auth.onAuthStateChange((_event, session) => { void loadRole(session?.user?.id) })
     return () => { active = false; listener.subscription.unsubscribe() }
   }, [])
 
@@ -337,10 +358,14 @@ export default function Page() {
       header: true,
       skipEmptyLines: true,
       delimitersToGuess: [',', ';', '\\t', '|'],
-      complete: (results: { data: CsvRow[]; errors: unknown[] }) => {
-        const normalized = normalizeRows(results.data)
-        if (!normalized.length) setNotice('Nessun prodotto riconoscibile. Controlla le colonne eBay.')
-        else persist(normalized)
+      complete: (results: { data: CsvRow[]; errors: unknown[]; meta?: { fields?: string[] } }) => {
+        const columns = results.meta?.fields || Object.keys(results.data[0] || {})
+        if (!columns.length || !results.data.length) setNotice('Il CSV non contiene colonne o righe leggibili.')
+        else {
+          setCsvColumns(columns)
+          setCsvRows(results.data)
+          setIsCsvMapOpen(true)
+        }
         setIsParsing(false)
       },
       error: () => { setNotice('Errore durante la lettura del CSV.'); setIsParsing(false) },
@@ -363,6 +388,7 @@ export default function Page() {
     try {
       const archive = await new window.JSZip().loadAsync(file)
       if (!supabase) throw new Error('Supabase non configurato.')
+      const client = supabase
       const photoGroups = new Map<string, { order: number; path: string; blob: Blob }[]>()
       for (const [path, entry] of Object.entries(archive.files)) {
         if (entry.dir || !ZIP_IMAGE_EXTENSIONS.test(path)) continue
@@ -389,9 +415,9 @@ export default function Page() {
         const images = await Promise.all(groupEntry[1].sort((a, b) => a.order - b.order || a.path.localeCompare(b.path)).map(async (item, index) => {
           const extension = item.path.split('.').pop() || 'jpg'
           const storagePath = `${product.id}/${Date.now()}-${index}.${extension}`
-          const upload = await supabase.storage.from('product-images').upload(storagePath, item.blob, { contentType: item.blob.type || 'image/jpeg', upsert: false })
+          const upload = await client.storage.from('product-images').upload(storagePath, item.blob, { contentType: item.blob.type || 'image/jpeg', upsert: false })
           if (upload.error) throw upload.error
-          return supabase.storage.from('product-images').getPublicUrl(storagePath).data.publicUrl
+          return client.storage.from('product-images').getPublicUrl(storagePath).data.publicUrl
         }))
         attachedImages += images.length
         matchedProducts.add(product.id)
@@ -501,7 +527,8 @@ export default function Page() {
               <button onClick={() => setIsDarkMode((current) => !current)} className="cupertino-button cupertino-button-icon inline-flex size-10 items-center justify-center rounded-xl border border-border text-muted-foreground transition hover:text-foreground" aria-label={isDarkMode ? 'Attiva modalità chiara' : 'Attiva modalità scura'}>{isDarkMode ? <Sun className="size-4" /> : <Moon className="size-4" />}</button>
               <button onClick={() => setIsCartOpen(true)} className="cart-button" aria-label="Apri carrello"><ShoppingBag className="size-4" /><span>{cart.length}</span></button>
               <AuthControls />
-              <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => handleFile(event.target.files?.[0])} />
+              <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => { handleFile(event.target.files?.[0]); event.target.value = '' }} />
+              <input ref={customCsvRef} type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => { handleFile(event.target.files?.[0]); event.target.value = '' }} />
               <input ref={zipFileRef} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => { handleZip(event.target.files?.[0]); event.target.value = '' }} />
               <input ref={zipLightFileRef} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => { handleZipLight(event.target.files?.[0]); event.target.value = '' }} />
               {canManage && <button onClick={resetCatalog} disabled={!products.length} className="header-reset-button inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2.5 text-sm text-muted-foreground transition hover:border-destructive/60 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="size-4" /><span className="hidden sm:inline">Svuota</span></button>}
@@ -518,7 +545,8 @@ export default function Page() {
             <label className="header-availability items-center gap-2 rounded-xl border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} className="size-3.5 accent-primary" /> Disponibili</label>
             <div className="view-control"><button type="button" className="header-view items-center gap-1.5 rounded-xl border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground transition hover:bg-muted" onClick={() => setIsViewOpen((open) => !open)} aria-expanded={isViewOpen}><LayoutGrid className="size-3.5" /> Vista</button>{isViewOpen && <ViewPanel pageSize={pageSize} setPageSize={setPageSize} viewLayout={viewLayout} setViewLayout={setViewLayout} columns={columns} setColumns={setColumns} cardDetails={cardDetails} setCardDetails={setCardDetails} />}</div>
             {canManage && <div className="manage-actions items-center gap-2">
-              <button onClick={() => fileRef.current?.click()} className="cupertino-button cupertino-button-primary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold"><Plus className="size-4" />{isParsing ? 'Pubblicazione…' : 'Aggiungi annuncio'}</button>
+              <button onClick={() => fileRef.current?.click()} className="cupertino-button cupertino-button-primary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold"><Plus className="size-4" />{isParsing ? 'Lettura CSV…' : 'Aggiungi annuncio'}</button>
+              <button onClick={() => customCsvRef.current?.click()} className="cupertino-button cupertino-button-secondary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold"><Table className="size-4" />CSV personalizzato</button>
               <button onClick={() => setIsPhotoChoiceOpen(true)} disabled={!products.length || isImportingZip} className="cupertino-button cupertino-button-secondary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"><ImageIcon className="size-4" />{isImportingZip ? 'Foto in corso…' : 'Aggiungi foto'}</button>
             </div>}
             {canManage && <button type="button" className="bulk-select-button" onClick={() => setSelectedIds(selectedIds.length === visible.length ? [] : visible.map((product) => product.id))}>{selectedIds.length === visible.length && visible.length ? 'Deseleziona pagina' : 'Seleziona pagina'}</button>}
@@ -543,6 +571,7 @@ export default function Page() {
       </main>
       {selected && <ProductEditorModal product={selected} formatPrice={formatPrice} ebayUrl={ebayUrl} canManage={canManage} darkMode={isDarkMode} onSave={updateProduct} onDelete={deleteProduct} onAddToCart={addToCart} onClose={() => setSelected(null)} />}
       {isBulkEditOpen && <BulkEditPanel selectedCount={selectedIds.length} darkMode={isDarkMode} onApply={applyBulkEdit} onClose={() => setIsBulkEditOpen(false)} />}
+      {isCsvMapOpen && <CsvMappingModal columns={csvColumns} rows={csvRows} darkMode={isDarkMode} onClose={() => setIsCsvMapOpen(false)} onImport={(mapping) => { const imported = normalizeRows(csvRows, mapping); if (!imported.length) setNotice('Nessun annuncio creato dal CSV.'); else { persist(mergeImportedProducts(products, imported, mapping)); setNotice(`${imported.length.toLocaleString('it-IT')} annunci creati o aggiornati.`) }; setIsCsvMapOpen(false); setCsvRows([]); setCsvColumns([]) }} />}
       {isPhotoChoiceOpen && <PhotoChoiceModal
         darkMode={isDarkMode}
         onClose={() => setIsPhotoChoiceOpen(false)}
@@ -566,6 +595,25 @@ function ViewPanel({ pageSize, setPageSize, viewLayout, setViewLayout, columns, 
 }
 
 function EmptyState({ canManage, onUpload }: { canManage: boolean; onUpload: () => void }) { return <div className="flex min-h-107.5 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/40 px-6 text-center"><div className="mb-5 flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-primary"><FileUp className="size-7" /></div><h3 className="text-xl font-semibold">La vetrina sta per aprire</h3><p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">{canManage ? 'Aggiungi il primo annuncio per iniziare a costruire la tua vetrina online.' : 'Gli articoli della collezione appariranno qui presto.'}</p>{canManage && <button onClick={onUpload} className="mt-6 rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground transition hover:opacity-90">Aggiungi annuncio</button>}</div> }
+
+function CsvMappingModal({ columns, rows, darkMode, onClose, onImport }: { columns: string[]; rows: CsvRow[]; darkMode: boolean; onClose: () => void; onImport: (mapping: CsvMapping) => void }) {
+  const [mapping, setMapping] = useState<CsvMapping>(() => guessCsvMapping(columns))
+  const setField = (key: keyof CsvMapping, value: string) => setMapping((current) => ({ ...current, [key]: value }))
+
+  return <div className={`editor-overlay ${darkMode ? 'editor-dark' : ''}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section className="bulk-editor csv-mapping-editor" role="dialog" aria-modal="true" aria-label="Mappa colonne CSV">
+      <div className="editor-heading"><div><p className="editor-kicker">Importazione CSV</p><h2>Abbina le colonne</h2></div><button onClick={onClose} aria-label="Chiudi"><X /></button></div>
+      <div className="csv-mapping-content">
+        <p className="editor-help">Sono state trovate {columns.length} colonne e {rows.length.toLocaleString('it-IT')} righe. Scegli quale colonna usare per ogni parametro dell'annuncio.</p>
+        <div className="csv-mapping-fields">
+          {CSV_FIELD_DEFS.map((field) => <label key={field.key}>{field.label}{field.help && <small>{field.help}</small>}<select value={mapping[field.key]} onChange={(event) => setField(field.key, event.target.value)}><option value="">Non usare</option>{columns.map((column) => <option key={column} value={column}>{column}</option>)}</select></label>)}
+        </div>
+        <div className="csv-preview"><strong>Anteprima</strong><div className="csv-preview-table">{rows.slice(0, 3).map((row, index) => <div key={index} className="csv-preview-row">{columns.slice(0, 4).map((column) => <span key={column} title={row[column]}><b>{column}</b>{row[column] || '—'}</span>)}</div>)}</div></div>
+      </div>
+      <div className="editor-actions"><button onClick={onClose}>Annulla</button><div><button className="editor-save" onClick={() => onImport(mapping)}>Crea / aggiorna annunci</button></div></div>
+    </section>
+  </div>
+}
 
 function BulkActionBar({ count, onDelete, onEdit }: { count: number; onDelete: () => void; onEdit: () => void }) {
   return <div className="bulk-action-bar"><strong>{count} selezionati</strong><button onClick={onEdit}>Modifica selezionati</button><button className="danger" onClick={onDelete}>Elimina selezionati</button></div>
