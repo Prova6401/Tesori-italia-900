@@ -9,6 +9,7 @@ import {
   ArrowUpRight,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Database,
   ExternalLink,
   FileUp,
@@ -17,9 +18,12 @@ import {
   List,
   MoreHorizontal,
   Moon,
+  PackageCheck,
   Plus,
   RotateCcw,
   Search,
+  SlidersHorizontal,
+  Settings,
   Sun,
   ShoppingBag,
   Table,
@@ -37,7 +41,7 @@ type Product = {
   images: string[]
   variants: string[]
 }
-type UserRole = 'manage' | 'customer' | null
+type UserRole = 'manager' | 'customer' | null
 type CsvMapping = { id: string; title: string; description: string; price: string; quantity: string; category: string; images: string; variants: string }
 
 const CSV_FIELD_DEFS: { key: keyof CsvMapping; label: string; help?: string }[] = [
@@ -92,6 +96,7 @@ declare global {
 const FALLBACK_IMAGE = 'https://www.svgrepo.com/show/508699/landscape-placeholder.svg'
 const ZIP_IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|gif|avif)$/i
 const PRODUCTS_CACHE_KEY = 'tesori-italia-products-v1'
+const THEME_STORAGE_KEY = 'tesori-italia-theme'
 
 function normalizeTitle(value: string) {
   return value.toLocaleLowerCase().trim().replace(/\s+/g, ' ')
@@ -242,6 +247,7 @@ export default function Page() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('all')
   const [priceFilter, setPriceFilter] = useState('all')
+  const [sortOrder, setSortOrder] = useState('updated')
   const [onlyAvailable, setOnlyAvailable] = useState(false)
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Product | null>(null)
@@ -260,17 +266,30 @@ export default function Page() {
   const [viewLayout, setViewLayout] = useState<'grid' | 'list'>('grid')
   const [columns, setColumns] = useState(4)
   const [cardDetails, setCardDetails] = useState<'full' | 'minimal'>('full')
-  const [isViewOpen, setIsViewOpen] = useState(false)
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false)
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false)
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false)
   const [isHeaderBrandCondensed, setIsHeaderBrandCondensed] = useState(false)
   const [isDarkMode, setIsDarkMode] = useState(false)
+  const [isManagerPanelOpen, setIsManagerPanelOpen] = useState(false)
+  const [isDesktopMenuOpen, setIsDesktopMenuOpen] = useState(false)
+  const [isDesktopViewOpen, setIsDesktopViewOpen] = useState(false)
+  const [isDesktopFiltersOpen, setIsDesktopFiltersOpen] = useState(false)
   const [userRole, setUserRole] = useState<UserRole>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const zipFileRef = useRef<HTMLInputElement>(null)
   const zipLightFileRef = useRef<HTMLInputElement>(null)
   const customCsvRef = useRef<HTMLInputElement>(null)
+  const catalogGridRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY)
+    if (savedTheme === 'dark') setIsDarkMode(true)
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light')
+  }, [isDarkMode])
 
   useEffect(() => {
     let active = true
@@ -305,7 +324,7 @@ export default function Page() {
         return
       }
       const { data } = await client.from('profiles').select('role').eq('id', userId).maybeSingle()
-      if (active) setUserRole(data?.role === 'manage' ? 'manage' : 'customer')
+      if (active) setUserRole(data?.role === 'manager' || data?.role === 'manage' ? 'manager' : 'customer')
     }
     void client.auth.getUser().then(({ data }) => loadRole(data.user?.id))
     const { data: listener } = client.auth.onAuthStateChange((_event, session) => { void loadRole(session?.user?.id) })
@@ -334,7 +353,7 @@ export default function Page() {
   const categories = useMemo(() => [...new Set(products.map((product) => product.category))].sort((a, b) => a.localeCompare(b)), [products])
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
-    return products.filter((product) => {
+    const matching = products.filter((product) => {
       const matchesQuery = !needle || `${product.title} ${product.id} ${product.category}`.toLocaleLowerCase().includes(needle)
       const matchesPrice = priceFilter === 'all'
         || (priceFilter === 'under-25' && product.price < 25)
@@ -342,14 +361,20 @@ export default function Page() {
         || (priceFilter === 'over-100' && product.price > 100)
       return matchesQuery && (category === 'all' || product.category === category) && matchesPrice && (!onlyAvailable || product.quantity > 0)
     })
-  }, [products, query, category, priceFilter, onlyAvailable])
+    return [...matching].sort((first, second) => {
+      if (sortOrder === 'price-asc') return first.price - second.price
+      if (sortOrder === 'price-desc') return second.price - first.price
+      if (sortOrder === 'title') return first.title.localeCompare(second.title)
+      return 0
+    })
+  }, [products, query, category, priceFilter, onlyAvailable, sortOrder])
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
   const available = products.filter((product) => product.quantity > 0).length
-  const canManage = userRole === 'manage'
+  const canManage = userRole === 'manager'
   const selectedProducts = products.filter((product) => selectedIds.includes(product.id))
 
-  useEffect(() => { setPage(1) }, [query, category, priceFilter, onlyAvailable])
+  useEffect(() => { setPage(1) }, [query, category, priceFilter, onlyAvailable, sortOrder])
   useEffect(() => { if (page > pageCount) setPage(pageCount) }, [page, pageCount])
 
   const persist = useCallback((next: Product[]) => {
@@ -357,6 +382,17 @@ export default function Page() {
     writeProductsCache(next)
     void writeStoredProducts(next).catch(() => setNotice('Impossibile pubblicare gli articoli su Supabase.'))
   }, [])
+
+  async function refreshProducts() {
+    try {
+      const next = await readStoredProducts()
+      setProducts(next)
+      writeProductsCache(next)
+      setNotice('Catalogo sincronizzato con Supabase.')
+    } catch {
+      setNotice('Impossibile sincronizzare il catalogo con Supabase.')
+    }
+  }
 
   const updateProduct = useCallback(async (updated: Product) => {
     if (!canManage) return
@@ -575,64 +611,59 @@ export default function Page() {
     setNotice('Articolo aggiunto al carrello.')
   }
   const removeFromCart = (id: string) => setCart((current) => current.filter((product) => product.id !== id))
+  const scrollToCatalog = () => catalogGridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   return (
     <>
       <Script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js" strategy="afterInteractive" />
       <Script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" strategy="afterInteractive" />
       <main className={`min-h-screen bg-background text-foreground ${isDarkMode ? 'site-dark' : ''}`}>
-        <header className={`border-b border-border bg-card/80 backdrop-blur-xl ${isHeaderScrolled ? 'is-scrolled' : ''} ${isHeaderBrandCondensed ? 'is-brand-condensed' : ''}`}>
+        <header className="desktop-orbit-header is-scrolled">
+          <div className="desktop-orbit-inner">
+            <div className="desktop-orbit-brand"><span className="desktop-orbit-index">01</span><Image src="https://github.com/Prova6401/Tesori-italia-900/blob/main/public/logo.jpg?raw=true" alt="Tesori Italia '900s" width={46} height={46} priority className="desktop-orbit-logo" /><div><h1>Tesori Italia <b>'900s</b></h1><p>Archivio di oggetti con una seconda vita</p></div></div>
+            <label className="desktop-orbit-search"><Search className="size-4" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cerca per titolo, categoria o ID" aria-label="Cerca nel catalogo" /><kbd>⌘ K</kbd></label>
+            <div className="desktop-orbit-actions"><button type="button" className="desktop-orbit-menu-trigger" onClick={() => setIsDesktopMenuOpen((open) => !open)} aria-label="Apri strumenti catalogo" aria-expanded={isDesktopMenuOpen}><ChevronDown className="size-4" /></button><button type="button" className="desktop-orbit-icon" onClick={() => setIsCartOpen(true)} aria-label="Apri carrello"><ShoppingBag className="size-4" /><b>{cart.length}</b></button><AuthControls /><button type="button" className="desktop-orbit-theme" onClick={() => setIsDarkMode((current) => !current)} aria-label={isDarkMode ? 'Attiva modalità chiara' : 'Attiva modalità scura'}>{isDarkMode ? <Sun className="size-4" /> : <Moon className="size-4" />}</button><DesktopHeaderMenu open={isDesktopMenuOpen} canManage={canManage} onView={() => { setIsDesktopMenuOpen(false); setIsDesktopViewOpen(true) }} onFilters={() => { setIsDesktopMenuOpen(false); setIsDesktopFiltersOpen(true) }} onAdd={() => { setIsDesktopMenuOpen(false); fileRef.current?.click() }} onCsv={() => { setIsDesktopMenuOpen(false); customCsvRef.current?.click() }} onPhotos={() => { setIsDesktopMenuOpen(false); setIsPhotoChoiceOpen(true) }} onClear={() => { setIsDesktopMenuOpen(false); void resetCatalog() }} /></div>
+          </div>
+        </header>
+
+        <header className={`legacy-mobile-header border-b border-border bg-card/80 backdrop-blur-xl ${isHeaderScrolled ? 'is-scrolled' : ''} ${isHeaderBrandCondensed ? 'is-brand-condensed' : ''}`}>
           <div className="mx-auto flex max-w-360 items-center justify-between gap-5 px-6 py-4 lg:px-10">
             <div className="flex min-w-0 items-center gap-3">
               <Image src="https://github.com/Prova6401/Tesori-italia-900/blob/main/public/logo.jpg?raw=true" alt="Tesori Italia '900s" width={48} height={48} priority className="brand-logo size-12 rounded-xl object-cover shadow-lg shadow-primary/20" />
               <div className="min-w-0"><h1 className="text-lg font-bold tracking-tight">Tesori Italia '900s</h1><p className="hidden text-xs text-muted-foreground sm:block">Oggetti scelti, storie da scoprire.</p></div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <label className="desktop-header-search header-search hidden items-center gap-2 rounded-xl border border-border bg-background/70 px-3 py-2 lg:flex"><Search className="size-4 text-muted-foreground" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cerca nella collezione" aria-label="Cerca nella collezione" /></label>
+            <div className="relative flex shrink-0 items-center gap-2">
               <button onClick={() => setIsDarkMode((current) => !current)} className="cupertino-button cupertino-button-icon inline-flex size-10 items-center justify-center rounded-xl border border-border text-muted-foreground transition hover:text-foreground" aria-label={isDarkMode ? 'Attiva modalità chiara' : 'Attiva modalità scura'}>{isDarkMode ? <Sun className="size-4" /> : <Moon className="size-4" />}</button>
               <button onClick={() => setIsCartOpen(true)} className="cart-button" aria-label="Apri carrello"><ShoppingBag className="size-4" /><span>{cart.length}</span></button>
               <AuthControls />
+              {canManage && <div className="desktop-manager-menu hidden lg:block"><button type="button" className="desktop-manager-trigger" onClick={() => setIsManagerPanelOpen((open) => !open)} aria-expanded={isManagerPanelOpen}><Settings className="size-4" /> Pannello gestione</button>{isManagerPanelOpen && <div className="desktop-manager-panel"><strong>Azioni rapide</strong><button type="button" onClick={() => { setIsManagerPanelOpen(false); fileRef.current?.click() }}><Plus className="size-4" /> Aggiungi annuncio</button><button type="button" onClick={() => { setIsManagerPanelOpen(false); customCsvRef.current?.click() }}><Table className="size-4" /> CSV personalizzato</button><button type="button" disabled={!products.length || isImportingZip} onClick={() => { setIsManagerPanelOpen(false); setIsPhotoChoiceOpen(true) }}><ImageIcon className="size-4" /> Aggiungi foto</button><button type="button" onClick={() => { setIsManagerPanelOpen(false); setSelectedIds(visible.map((product) => product.id)) }}><List className="size-4" /> Seleziona pagina</button><button type="button" onClick={() => { setIsManagerPanelOpen(false); void refreshProducts() }}><Database className="size-4" /> Sincronizza catalogo</button><button type="button" disabled={!products.length} onClick={() => { setIsManagerPanelOpen(false); void resetCatalog() }}><RotateCcw className="size-4" /> Svuota catalogo</button></div>}</div>}
               <input ref={fileRef} type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => { handleFile(event.target.files?.[0]); event.target.value = '' }} />
               <input ref={customCsvRef} type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => { handleFile(event.target.files?.[0]); event.target.value = '' }} />
               <input ref={zipFileRef} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => { handleZip(event.target.files?.[0]); event.target.value = '' }} />
               <input ref={zipLightFileRef} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => { handleZipLight(event.target.files?.[0]); event.target.value = '' }} />
-              {canManage && <button onClick={resetCatalog} disabled={!products.length} className="header-reset-button inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2.5 text-sm text-muted-foreground transition hover:border-destructive/60 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="size-4" /><span className="hidden sm:inline">Svuota</span></button>}
             </div>
           </div>
         </header>
 
-        <div className={`store-toolbar ${isHeaderScrolled ? 'under-scrolled-header' : ''}`}>
-          <div className="store-toolbar-count"><Database className="size-4 text-primary" /><span>{products.length.toLocaleString('it-IT')}</span><small>prodotti online</small></div>
-          <label className="header-search store-toolbar-search items-center gap-2 rounded-xl border border-border bg-background/70 px-3 py-2"><Search className="size-4 text-muted-foreground" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cerca prodotti, categorie o parole chiave…" aria-label="Cerca prodotti" /></label>
-          <div className="store-toolbar-filters">
-            <select value={category} onChange={(event) => setCategory(event.target.value)} className="header-filter header-category appearance-none rounded-xl border border-border bg-background/70 px-3 py-2 text-xs outline-none" aria-label="Filtra per categoria"><option value="all">Categorie</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select>
-            <select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value)} className="header-filter appearance-none rounded-xl border border-border bg-background/70 px-3 py-2 text-xs outline-none" aria-label="Filtra per prezzo"><option value="all">Prezzo</option><option value="under-25">Sotto 25 €</option><option value="25-100">25 - 100 €</option><option value="over-100">Oltre 100 €</option></select>
-            <label className="header-availability items-center gap-2 rounded-xl border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} className="size-3.5 accent-primary" /> Disponibili</label>
-            <div className="view-control"><button type="button" className="header-view items-center gap-1.5 rounded-xl border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground transition hover:bg-muted" onClick={() => setIsViewOpen((open) => !open)} aria-expanded={isViewOpen}><LayoutGrid className="size-3.5" /> Vista</button>{isViewOpen && <ViewPanel pageSize={pageSize} setPageSize={setPageSize} viewLayout={viewLayout} setViewLayout={setViewLayout} columns={columns} setColumns={setColumns} cardDetails={cardDetails} setCardDetails={setCardDetails} />}</div>
-            {canManage && <div className="manage-actions items-center gap-2">
-              <button onClick={() => fileRef.current?.click()} className="cupertino-button cupertino-button-primary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold"><Plus className="size-4" />{isParsing ? 'Lettura CSV…' : 'Aggiungi annuncio'}</button>
-              <button onClick={() => customCsvRef.current?.click()} className="cupertino-button cupertino-button-secondary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold"><Table className="size-4" />CSV personalizzato</button>
-              <button onClick={() => setIsPhotoChoiceOpen(true)} disabled={!products.length || isImportingZip} className="cupertino-button cupertino-button-secondary inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"><ImageIcon className="size-4" />{isImportingZip ? 'Foto in corso…' : 'Aggiungi foto'}</button>
-            </div>}
-            {canManage && <button type="button" className="bulk-select-button" onClick={() => setSelectedIds(selectedIds.length === visible.length ? [] : visible.map((product) => product.id))}>{selectedIds.length === visible.length && visible.length ? 'Deseleziona pagina' : 'Seleziona pagina'}</button>}
-          </div>
-        </div>
-
         <div className="mx-auto max-w-360 px-5 py-8 lg:px-8">
-          <section className="mb-8 flex flex-col justify-between gap-5 md:flex-row md:items-end">
-            <div><p className="mb-2 font-mono text-xs uppercase tracking-[0.22em] text-primary">La collezione online</p><h2 className="text-3xl font-semibold tracking-tight md:text-4xl">Trova qualcosa di speciale.</h2><p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">Esplora pezzi selezionati, scopri nuovi oggetti e trova il prossimo tesoro da portare a casa.</p></div>
-            <div className="flex gap-2 text-xs text-muted-foreground"><span className="rounded-full border border-border px-3 py-2">{available.toLocaleString('it-IT')} disponibili</span><span className="rounded-full border border-border px-3 py-2">{categories.length} categorie</span></div>
+          <section className="catalog-hero mb-8 flex flex-col justify-between gap-6 md:flex-row md:items-end">
+            <div className="catalog-hero-copy"><p className="mb-2 font-mono text-xs uppercase tracking-[0.22em] text-primary">La collezione online</p><h2 className="text-3xl font-semibold tracking-tight md:text-4xl">Trova qualcosa di speciale.</h2><p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">Oggetti vintage, memorabilia e pezzi da collezione scelti per chi cerca qualcosa che non si trova ovunque.</p><div className="catalog-hero-actions"><button type="button" onClick={scrollToCatalog} className="catalog-hero-primary">Esplora il catalogo <ArrowUpRight className="size-4" /></button><button type="button" onClick={() => { setOnlyAvailable(true); scrollToCatalog() }} className="catalog-hero-secondary">Solo disponibili <PackageCheck className="size-4" /></button></div></div>
+            <div className="catalog-hero-stats flex gap-2 text-xs text-muted-foreground"><span><strong>{products.length.toLocaleString('it-IT')}</strong><small> annunci</small></span><span><strong>{available.toLocaleString('it-IT')}</strong><small> disponibili</small></span><span><strong>{categories.length}</strong><small> categorie</small></span></div>
           </section>
 
           {notice && <div className="mb-6 flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-primary">{notice}<button onClick={() => setNotice('')} aria-label="Chiudi messaggio"><X className="size-4" /></button></div>}
 
           {products.length === 0 ? <EmptyState canManage={canManage} onUpload={() => fileRef.current?.click()} /> : <>
-            <div className="mb-4 flex items-center justify-between"><p className="text-sm text-muted-foreground"><span className="font-semibold text-foreground">{filtered.length.toLocaleString('it-IT')}</span> risultati</p><p className="font-mono text-xs text-muted-foreground">PAGINA {page} / {pageCount}</p></div>
-            {visible.length ? <div className={`product-grid ${viewLayout === 'list' ? 'product-grid-list' : ''} ${cardDetails === 'minimal' ? 'product-grid-minimal' : ''}`} style={{ '--product-columns': columns } as React.CSSProperties}>{visible.map((product) => <ProductCard key={product.id} product={product} formatPrice={formatPrice} compact={cardDetails === 'minimal'} canManage={canManage} isSelected={selectedIds.includes(product.id)} onToggleSelect={() => setSelectedIds((current) => current.includes(product.id) ? current.filter((id) => id !== product.id) : [...current, product.id])} onOpen={() => setSelected(product)} />)}</div> : <div className="rounded-2xl border border-dashed border-border py-20 text-center text-muted-foreground">Nessun prodotto corrisponde ai filtri.</div>}
+            <div className="mb-4 flex items-center justify-between"><p className="text-sm text-muted-foreground"><span className="font-semibold text-foreground">{filtered.length.toLocaleString('it-IT')}</span> risultati</p><div className="inline-flex items-center gap-2"><button type="button" aria-label="Pagina precedente" disabled={page === 1} onClick={() => setPage((current) => current - 1)} className="catalog-page-arrow"><ChevronLeft className="size-3.5" /></button><p className="font-mono text-xs text-muted-foreground">PAGINA {page} / {pageCount}</p><button type="button" aria-label="Pagina successiva" disabled={page === pageCount} onClick={() => setPage((current) => current + 1)} className="catalog-page-arrow"><ChevronRight className="size-3.5" /></button></div></div>
+            {visible.length ? <div ref={catalogGridRef} className={`product-grid ${viewLayout === 'list' ? 'product-grid-list' : ''} ${cardDetails === 'minimal' ? 'product-grid-minimal' : ''}`} style={{ '--product-columns': columns } as React.CSSProperties}>{visible.map((product) => <ProductCard key={product.id} product={product} formatPrice={formatPrice} compact={cardDetails === 'minimal'} canManage={canManage} isSelected={selectedIds.includes(product.id)} onToggleSelect={() => setSelectedIds((current) => current.includes(product.id) ? current.filter((id) => id !== product.id) : [...current, product.id])} onOpen={() => setSelected(product)} />)}</div> : <div ref={catalogGridRef} className="rounded-2xl border border-dashed border-border py-20 text-center text-muted-foreground">Nessun prodotto corrisponde ai filtri.</div>}
             {canManage && selectedIds.length > 0 && <BulkActionBar count={selectedIds.length} onDelete={deleteSelectedProducts} onEdit={() => setIsBulkEditOpen(true)} />}
             <nav className="mt-8 flex items-center justify-center gap-2" aria-label="Paginazione"><button disabled={page === 1} onClick={() => setPage((current) => current - 1)} className="inline-flex size-10 items-center justify-center rounded-lg border border-border text-muted-foreground transition hover:border-primary hover:text-primary disabled:opacity-30"><ChevronLeft className="size-4" /></button><span className="px-3 text-sm text-muted-foreground">{page} di {pageCount}</span><button disabled={page === pageCount} onClick={() => setPage((current) => current + 1)} className="inline-flex size-10 items-center justify-center rounded-lg border border-border text-muted-foreground transition hover:border-primary hover:text-primary disabled:opacity-30"><ChevronRight className="size-4" /></button></nav>
           </>}
         </div>
       </main>
+      {isDesktopViewOpen && <div className={`desktop-control-modal ${isDarkMode ? 'desktop-control-modal-dark' : ''}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsDesktopViewOpen(false)}><section className="desktop-control-card" role="dialog" aria-modal="true" aria-label="Vista catalogo"><div className="desktop-control-heading"><div><span>CONFIGURAZIONE</span><h2>Vista catalogo</h2></div><button type="button" onClick={() => setIsDesktopViewOpen(false)} aria-label="Chiudi vista"><X /></button></div><ViewPanel pageSize={pageSize} setPageSize={setPageSize} viewLayout={viewLayout} setViewLayout={setViewLayout} columns={columns} setColumns={setColumns} cardDetails={cardDetails} setCardDetails={setCardDetails} /></section></div>}
+      {isDesktopFiltersOpen && <div className={`desktop-control-modal ${isDarkMode ? 'desktop-control-modal-dark' : ''}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsDesktopFiltersOpen(false)}><FilterPanel category={category} setCategory={setCategory} categories={categories} priceFilter={priceFilter} setPriceFilter={setPriceFilter} sortOrder={sortOrder} setSortOrder={setSortOrder} onlyAvailable={onlyAvailable} setOnlyAvailable={setOnlyAvailable} resultCount={filtered.length} onClose={() => setIsDesktopFiltersOpen(false)} /></div>}
       {selected && <ProductEditorModal product={selected} formatPrice={formatPrice} ebayUrl={ebayUrl} canManage={canManage} darkMode={isDarkMode} onSave={updateProduct} onDelete={deleteProduct} onAddToCart={addToCart} onClose={() => setSelected(null)} />}
       {isBulkEditOpen && <BulkEditPanel selectedCount={selectedIds.length} darkMode={isDarkMode} onApply={applyBulkEdit} onClose={() => setIsBulkEditOpen(false)} />}
       {isCsvMapOpen && <CsvMappingModal columns={csvColumns} rows={csvRows} darkMode={isDarkMode} onClose={() => setIsCsvMapOpen(false)} onImport={(mapping) => { const imported = normalizeRows(csvRows, mapping); if (!imported.length) setNotice('Nessun annuncio creato dal CSV.'); else { persist(mergeImportedProducts(products, imported, mapping)); setNotice(`${imported.length.toLocaleString('it-IT')} annunci creati o aggiornati.`) }; setIsCsvMapOpen(false); setCsvRows([]); setCsvColumns([]) }} />}
@@ -645,13 +676,22 @@ export default function Page() {
       {isCartOpen && <CartPage cart={cart} total={cartTotal} darkMode={isDarkMode} onRemove={removeFromCart} onClose={() => setIsCartOpen(false)} />}
       <nav className={`mobile-tab-bar ${isDarkMode ? 'mobile-dark' : ''}`} aria-label="Navigazione mobile"><button onClick={() => setIsMobileSearchOpen(true)}><Search /><span>Cerca</span></button><button onClick={() => setIsCartOpen(true)}><ShoppingBag /><span>Carrello</span><b>{cart.length}</b></button><button onClick={() => setIsMobileMoreOpen((open) => !open)}><MoreHorizontal /><span>Altro</span></button></nav>
       {isMobileSearchOpen && <div className={`mobile-search-overlay ${isDarkMode ? 'mobile-dark' : ''}`}><div className="mobile-search-top"><button onClick={() => setIsMobileSearchOpen(false)}><X /></button><label><Search /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cerca prodotti..." /></label></div><p>{filtered.length.toLocaleString('it-IT')} risultati</p></div>}
-      {isMobileMoreOpen && <div className={`mobile-more-sheet ${isDarkMode ? 'mobile-dark' : ''}`}><div className="mobile-more-grabber" /><div className="mobile-more-heading"><strong>Altre opzioni</strong><button onClick={() => setIsMobileMoreOpen(false)}><X /></button></div><label>Categoria<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">Tutte le categorie</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>Prezzo<select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value)}><option value="all">Tutti i prezzi</option><option value="under-25">Sotto 25 €</option><option value="25-100">25 - 100 €</option><option value="over-100">Oltre 100 €</option></select></label><label className="mobile-more-check"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} /> Solo disponibili</label><button onClick={() => { setIsViewOpen(true); setIsMobileMoreOpen(false) }}><LayoutGrid /> Vista</button>{canManage && <><button onClick={() => fileRef.current?.click()}><Plus /> Aggiungi annuncio</button><button onClick={() => { setIsPhotoChoiceOpen(true); setIsMobileMoreOpen(false) }}><ImageIcon /> Aggiungi foto</button><button onClick={resetCatalog}><RotateCcw /> Svuota</button><button onClick={() => setSelectedIds(visible.map((product) => product.id))}><List /> Seleziona pagina</button></>}</div>}
+      {isMobileMoreOpen && <div className={`mobile-more-sheet ${isDarkMode ? 'mobile-dark' : ''}`}><div className="mobile-more-grabber" /><div className="mobile-more-heading"><strong>Altre opzioni</strong><button onClick={() => setIsMobileMoreOpen(false)}><X /></button></div><label>Categoria<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">Tutte le categorie</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>Prezzo<select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value)}><option value="all">Tutti i prezzi</option><option value="under-25">Sotto 25 €</option><option value="25-100">25 - 100 €</option><option value="over-100">Oltre 100 €</option></select></label><label className="mobile-more-check"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} /> Solo disponibili</label><button onClick={() => { setIsDesktopViewOpen(true); setIsMobileMoreOpen(false) }}><LayoutGrid /> Vista</button>{canManage && <><button onClick={() => fileRef.current?.click()}><Plus /> Aggiungi annuncio</button><button onClick={() => { setIsPhotoChoiceOpen(true); setIsMobileMoreOpen(false) }}><ImageIcon /> Aggiungi foto</button><button onClick={resetCatalog}><RotateCcw /> Svuota</button><button onClick={() => setSelectedIds(visible.map((product) => product.id))}><List /> Seleziona pagina</button></>}</div>}
     </>
   )
 }
 
 function ProductCard({ product, formatPrice, compact, canManage, isSelected, onToggleSelect, onOpen }: { product: Product; formatPrice: (price: number) => string; compact: boolean; canManage: boolean; isSelected: boolean; onToggleSelect: () => void; onOpen: () => void }) {
-  return <div className={`product-card-wrap ${isSelected ? 'is-selected' : ''}`}><button onClick={onOpen} className="group overflow-hidden rounded-2xl border border-border bg-card text-left shadow-sm transition duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-xl hover:shadow-primary/5"><div className="relative aspect-square overflow-hidden bg-muted"><img src={product.images[0]} alt={product.title} loading="lazy" className="size-full object-cover transition duration-500 group-hover:scale-105" onError={(event) => { event.currentTarget.src = FALLBACK_IMAGE }} /><span className={`absolute left-3 top-3 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${product.quantity > 0 ? 'bg-emerald-500/90 text-white' : 'bg-foreground/80 text-background'}`}>{product.quantity > 0 ? 'Disponibile' : 'Esaurito'}</span>{product.images.length > 1 && <span className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full bg-background/85 px-2 py-1 text-[10px] text-foreground"><ImageIcon className="size-3" />{product.images.length}</span>}</div><div className="space-y-3 p-4"><p className={`text-[11px] uppercase tracking-wider text-muted-foreground ${compact ? 'hidden' : ''}`}>{product.category}</p><h3 className="line-clamp-2 min-h-10 text-sm font-semibold leading-5">{product.title}</h3><div className="flex items-end justify-between gap-2"><p className="text-lg font-bold tracking-tight">{formatPrice(product.price)}</p><p className={`text-[10px] text-muted-foreground ${compact ? 'hidden' : ''}`}>{product.quantity} pz</p></div><div className={`items-center justify-between border-t border-border pt-3 font-mono text-[10px] text-muted-foreground ${compact ? 'hidden' : 'flex'}`}><span>ID {product.id}</span><ArrowUpRight className="size-3.5 transition group-hover:text-primary" /></div></div></button>{canManage && <label className="product-select"><input type="checkbox" checked={isSelected} onChange={onToggleSelect} onClick={(event) => event.stopPropagation()} /> Seleziona</label>}</div>
+  return <div className={`product-card-wrap ${isSelected ? 'is-selected' : ''}`}><button onClick={onOpen} className="group product-card-button overflow-hidden rounded-2xl border border-border bg-card text-left shadow-sm transition duration-200 hover:-translate-y-1 hover:border-primary/50 hover:shadow-lg"><div className="relative aspect-square overflow-hidden bg-muted"><img src={product.images[0]} alt={product.title} loading="lazy" className="size-full object-cover transition duration-500 group-hover:scale-105" onError={(event) => { event.currentTarget.src = FALLBACK_IMAGE }} /><span className={`product-availability-badge-legacy absolute left-3 top-3 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${product.quantity > 0 ? 'bg-emerald-500/90 text-white' : 'bg-foreground/80 text-background'}`}>{product.quantity > 0 ? 'Disponibile' : 'Esaurito'}</span><span className={`desktop-product-availability-badge absolute left-3 top-3 ${product.quantity > 0 ? '' : 'is-sold-out'}`}><i />{product.quantity > 0 ? 'Disponibile' : 'Esaurito'}</span>{product.images.length > 1 && <span className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full bg-background/85 px-2 py-1 text-[10px] text-foreground"><ImageIcon className="size-3" />{product.images.length}</span>}</div><div className="product-card-content space-y-3 p-4"><p className={`text-[11px] uppercase tracking-wider text-muted-foreground ${compact ? 'hidden' : ''}`}>{product.category}</p><h3 className="line-clamp-2 min-h-10 text-sm font-semibold leading-5">{product.title}</h3><div className="flex items-end justify-between gap-2"><p className="product-price text-lg font-bold tracking-tight">{formatPrice(product.price)}</p><p className={`text-[10px] text-muted-foreground ${compact ? 'hidden' : ''}`}>{product.quantity} pz</p></div><div className={`items-center justify-between border-t border-border pt-3 font-mono text-[10px] text-muted-foreground ${compact ? 'hidden' : 'flex'}`}><span>ID {product.id}</span><ArrowUpRight className="size-3.5 transition group-hover:text-primary" /></div></div></button>{canManage && <label className="product-select"><input type="checkbox" checked={isSelected} onChange={onToggleSelect} onClick={(event) => event.stopPropagation()} /> Seleziona</label>}</div>
+}
+
+function DesktopHeaderMenu({ open, canManage, onView, onFilters, onAdd, onCsv, onPhotos, onClear }: { open: boolean; canManage: boolean; onView: () => void; onFilters: () => void; onAdd: () => void; onCsv: () => void; onPhotos: () => void; onClear: () => void }) {
+  if (!open) return null
+  return <div className="desktop-header-menu"><strong>STRUMENTI</strong><button type="button" onClick={onView}><LayoutGrid className="size-4" /> Vista</button><button type="button" onClick={onFilters}><SlidersHorizontal className="size-4" /> Filtri</button>{canManage && <><hr /><strong>MANAGER</strong><button type="button" onClick={onAdd}><Plus className="size-4" /> Aggiungi annuncio</button><button type="button" onClick={onCsv}><Table className="size-4" /> CSV personalizzato</button><button type="button" onClick={onPhotos}><ImageIcon className="size-4" /> Aggiungi foto</button><button type="button" onClick={onClear}><RotateCcw className="size-4" /> Svuota</button></>}</div>
+}
+
+function FilterPanel({ category, setCategory, categories, priceFilter, setPriceFilter, sortOrder, setSortOrder, onlyAvailable, setOnlyAvailable, resultCount, onClose }: { category: string; setCategory: (value: string) => void; categories: string[]; priceFilter: string; setPriceFilter: (value: string) => void; sortOrder: string; setSortOrder: (value: string) => void; onlyAvailable: boolean; setOnlyAvailable: (value: boolean) => void; resultCount: number; onClose: () => void }) {
+  return <section className="desktop-control-card filter-control-card" role="dialog" aria-modal="true" aria-label="Filtri catalogo"><div className="desktop-control-heading"><div><span>RICERCA AVANZATA</span><h2>Filtra e ordina</h2></div><button type="button" onClick={onClose} aria-label="Chiudi filtri"><X /></button></div><div className="filter-control-fields"><label>Ordina per<select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}><option value="updated">Più recenti</option><option value="title">Titolo, A-Z</option><option value="price-asc">Prezzo crescente</option><option value="price-desc">Prezzo decrescente</option></select></label><label>Categoria<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="all">Tutte le categorie</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>Fascia prezzo<select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value)}><option value="all">Qualsiasi prezzo</option><option value="under-25">Sotto 25 €</option><option value="25-100">Da 25 a 100 €</option><option value="over-100">Oltre 100 €</option></select></label><label className="filter-control-check"><input type="checkbox" checked={onlyAvailable} onChange={(event) => setOnlyAvailable(event.target.checked)} /> Solo articoli disponibili</label></div><div className="filter-control-footer"><span>{resultCount.toLocaleString('it-IT')} risultati</span><button type="button" onClick={onClose}>Mostra risultati</button></div></section>
 }
 
 function ViewPanel({ pageSize, setPageSize, viewLayout, setViewLayout, columns, setColumns, cardDetails, setCardDetails }: { pageSize: number; setPageSize: (value: number) => void; viewLayout: 'grid' | 'list'; setViewLayout: (value: 'grid' | 'list') => void; columns: number; setColumns: (value: number) => void; cardDetails: 'full' | 'minimal'; setCardDetails: (value: 'full' | 'minimal') => void }) {
@@ -779,7 +819,10 @@ function ProductEditorModal({ product, formatPrice, ebayUrl, canManage, darkMode
 }
 
 function CustomerProductModal({ product, formatPrice, ebayUrl, darkMode, onAddToCart, onClose }: { product: Product; formatPrice: (price: number) => string; ebayUrl: (id: string) => string; darkMode: boolean; onAddToCart: (product: Product) => void; onClose: () => void }) {
-  return <div className={`editor-overlay customer-product-overlay ${darkMode ? 'editor-dark' : ''}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="customer-product-modal" role="dialog" aria-modal="true" aria-label="Dettaglio prodotto"><div className="customer-product-top"><p>Dettaglio articolo</p><button onClick={onClose} aria-label="Chiudi"><X /></button></div><div className="customer-product-content"><div className="customer-product-image"><img src={product.images[0] || FALLBACK_IMAGE} alt={product.title} onError={(event) => { event.currentTarget.src = FALLBACK_IMAGE }} /><span>{product.quantity > 0 ? 'Disponibile' : 'Esaurito'}</span></div><div className="customer-product-info"><p className="editor-kicker">{product.category}</p><h2>{product.title}</h2><p className="customer-product-description">{product.description || 'Un pezzo selezionato da Tesori Italia \'900s.'}</p><div className="customer-product-price">{formatPrice(product.price)}</div><div className="customer-product-saving">Prezzo più conveniente: qui non applichiamo le commissioni eBay.</div><div className="customer-product-actions"><button className="customer-buy-button" onClick={() => window.open(ebayUrl(product.id), '_blank', 'noopener,noreferrer')}>Acquista su eBay <ExternalLink /></button><button className="customer-cart-button" onClick={() => onAddToCart(product)}><ShoppingBag /> Aggiungi al carrello</button></div><p className="customer-product-note">Il pagamento online sarà disponibile prossimamente.</p></div></div></section></div>
+  const [imageIndex, setImageIndex] = useState(0)
+  useEffect(() => { setImageIndex(0) }, [product.id])
+  const images = product.images.length ? product.images : [FALLBACK_IMAGE]
+  return <div className={`editor-overlay customer-product-overlay ${darkMode ? 'editor-dark' : ''}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="customer-product-modal" role="dialog" aria-modal="true" aria-label="Dettaglio prodotto"><div className="customer-product-top"><p>Dettaglio articolo</p><button onClick={onClose} aria-label="Chiudi"><X /></button></div><div className="customer-product-content"><div className="customer-product-gallery"><div className="customer-product-image"><img src={images[imageIndex]} alt={product.title} onError={(event) => { event.currentTarget.src = FALLBACK_IMAGE }} /><span>{product.quantity > 0 ? 'Disponibile' : 'Esaurito'}</span></div>{images.length > 1 && <div className="customer-product-thumbnails" aria-label="Galleria immagini">{images.map((image, index) => <button type="button" key={`${image}-${index}`} className={index === imageIndex ? 'is-active' : ''} onClick={() => setImageIndex(index)} aria-label={`Mostra foto ${index + 1}`} aria-pressed={index === imageIndex}><img src={image} alt="" onError={(event) => { event.currentTarget.src = FALLBACK_IMAGE }} /></button>)}</div>}</div><div className="customer-product-info"><p className="editor-kicker">{product.category}</p><h2>{product.title}</h2><p className="customer-product-description">{product.description || 'Un pezzo selezionato da Tesori Italia \'900s.'}</p><div className="customer-product-price">{formatPrice(product.price)}</div><div className="customer-product-saving">Prezzo più conveniente: qui non applichiamo le commissioni eBay.</div></div></div><div className="customer-product-actions-sticky"><div className="customer-product-actions"><button className="customer-buy-button" onClick={() => window.open(ebayUrl(product.id), '_blank', 'noopener,noreferrer')}>Acquista su eBay <ExternalLink /></button><button className="customer-cart-button" onClick={() => onAddToCart(product)}><ShoppingBag /> Aggiungi al carrello</button></div><p className="customer-product-note">Il pagamento online sarà disponibile prossimamente.</p></div></section></div>
 }
 
 function CartPage({ cart, total, darkMode, onRemove, onClose }: { cart: Product[]; total: number; darkMode: boolean; onRemove: (id: string) => void; onClose: () => void }) {

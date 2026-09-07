@@ -2,10 +2,11 @@
 
 import { FormEvent, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, LockKeyhole, Mail, ShieldCheck } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, LockKeyhole, Mail, Moon, ShieldCheck, Sun } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 
 type AuthMode = 'login' | 'signup'
+const THEME_STORAGE_KEY = 'tesori-italia-theme'
 
 export default function AuthPage() {
   const [mode, setMode] = useState<AuthMode>('login')
@@ -14,11 +15,21 @@ export default function AuthPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isDarkMode, setIsDarkMode] = useState(false)
 
   useEffect(() => {
     const requestedMode = new URLSearchParams(window.location.search).get('mode')
     if (requestedMode === 'signup') setMode('signup')
   }, [])
+
+  useEffect(() => {
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY)
+    if (savedTheme === 'dark') setIsDarkMode(true)
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, isDarkMode ? 'dark' : 'light')
+  }, [isDarkMode])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -40,23 +51,22 @@ export default function AuthPage() {
   }
 
   return (
-    <main className="auth-page">
+    <main className={`auth-page ${isDarkMode ? 'auth-dark' : ''}`}>
       <div className="auth-glow auth-glow-one" />
       <div className="auth-glow auth-glow-two" />
-      <header className="auth-page-header">
-        <Link href="/" className="auth-brand"><img src="/logo.jpg" alt="Tesori Italia '900s" /><span>Tesori Italia <b>'900s</b></span></Link>
-        <Link href="/" className="auth-back"><ArrowLeft className="size-4" /> Torna al catalogo</Link>
-      </header>
+      <Link href="/" className="auth-back auth-back-home"><ArrowLeft className="size-5" /><span>Torna alla home</span></Link>
+      <button type="button" className="auth-theme-toggle" onClick={() => setIsDarkMode((current) => !current)} aria-label={isDarkMode ? 'Attiva modalità chiara' : 'Attiva modalità scura'}>{isDarkMode ? <Sun className="size-4" /> : <Moon className="size-4" />}</button>
 
       <div className="auth-layout">
         <section className="auth-intro">
-          <p className="auth-page-kicker"><span /> Collezione privata</p>
-          <h1>Il tuo catalogo,<br /><em>sempre con te.</em></h1>
-          <p className="auth-intro-copy">Accedi a Tesori Italia '900s per esplorare e gestire il tuo inventario con la calma e la precisione di una collezione curata.</p>
+          <div className="auth-identity"><img src="/Tesori-italia-900/logo.jpg" alt="Tesori Italia '900s" /><span>Tesori Italia <b>'900s</b></span></div>
+          <p className="auth-page-kicker"><span /> Negozio online</p>
+          <h1>Trova qualcosa di<br /><em>speciale.</em></h1>
+          <p className="auth-intro-copy">Entra in Tesori Italia '900s e scopri oggetti vintage, memorabilia e pezzi da collezione scelti per chi ama le cose con una storia.</p>
           <div className="auth-benefits">
-            <p><Check /> Accesso personale e sicuro</p>
-            <p><Check /> Catalogo pronto in pochi istanti</p>
-            <p><Check /> Un'esperienza senza distrazioni</p>
+            <p><Check /> Pezzi selezionati da scoprire</p>
+            <p><Check /> Prezzi chiari e acquisto su eBay</p>
+            <p><Check /> Catalogo aggiornato ogni giorno</p>
           </div>
         </section>
 
