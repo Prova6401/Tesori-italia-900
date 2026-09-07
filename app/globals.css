@@ -676,6 +676,7 @@ main.site-dark .catalog-hero-stats small { color: #a1a1a6; }
 
 @media (max-width: 760px) {
   .mobile-tab-bar { position: fixed !important; z-index: 999 !important; pointer-events: auto !important; }
+  .customer-product-overlay { z-index: 1100; }
   .desktop-control-modal { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px; background: rgb(15 23 42 / 42%); backdrop-filter: blur(8px); }
   .desktop-control-card { width: 100%; max-height: calc(100dvh - 32px); overflow: auto; border: 1px solid #d8dee8; border-radius: 10px; color: #172033; background: #fffdf5; box-shadow: 8px 8px 0 rgb(23 32 51 / 12%); }
   .desktop-control-heading { padding: 18px 16px 15px; }
@@ -1248,6 +1249,31 @@ main.site-dark .account-close { color: #f5f5f7 !important; background: #3a3a40 !
   main.site-dark .desktop-header-menu button, main.site-dark .filter-control-fields label, main.site-dark .filter-control-footer { color: #d1d5db; }
   main.site-dark .desktop-header-menu hr, main.site-dark .desktop-control-heading, main.site-dark .filter-control-footer { border-color: #3a3d47; }
   main.site-dark .filter-control-fields select, main.site-dark .filter-control-check { color: #f5f5f7; border-color: #3a3d47; background: #18191d; }
+}
+
+@media (min-width: 768px) {
+  main.site-dark .desktop-header-menu {
+    color: #f5f5f7;
+    border-color: #3a3d47;
+    background: #22242a;
+    box-shadow: 8px 8px 0 rgb(0 0 0 / 28%);
+  }
+  main.site-dark .desktop-header-menu strong { color: #a1a1a6; }
+  main.site-dark .desktop-header-menu button { color: #d1d5db; }
+  main.site-dark .desktop-header-menu button:hover { color: #ff8b78; background: #3a2525; }
+  main.site-dark .desktop-header-menu hr { border-color: #3a3d47; }
+  main.site-dark .desktop-control-card { color: #f5f5f7; border-color: #3a3d47; background: #22242a; box-shadow: 12px 12px 0 rgb(0 0 0 / 32%); }
+  main.site-dark .desktop-control-heading { border-color: #3a3d47; }
+  main.site-dark .desktop-control-heading > button { color: #d1d5db; border-color: #3a3d47; background: #18191d; }
+  main.site-dark .desktop-control-heading > button:hover { color: #ff8b78; border-color: #ff8b78; }
+  main.site-dark .desktop-control-card > .view-panel { color: #f5f5f7; background: transparent; }
+  main.site-dark .desktop-control-card > .view-panel > label,
+  main.site-dark .desktop-control-card > .view-panel .view-panel-group { color: #d1d5db; }
+  main.site-dark .desktop-control-card > .view-panel select { color: #f5f5f7; border-color: #3a3d47; background: #18191d; }
+  main.site-dark .desktop-control-card > .view-panel .view-segmented { background: #18191d; }
+  main.site-dark .desktop-control-card > .view-panel .view-segmented button { color: #a1a1a6; }
+  main.site-dark .desktop-control-card > .view-panel .view-segmented button:hover { color: #f5f5f7; background: #2a2a2e; }
+  main.site-dark .desktop-control-card > .view-panel .view-segmented button.active { color: #fff; background: #3a3d47; box-shadow: 0 1px 4px rgb(0 0 0 / 35%); }
 }
 
 @media (min-width: 768px) {
