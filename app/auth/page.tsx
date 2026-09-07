@@ -36,11 +36,7 @@ export default function AuthPage() {
       setMessage(result.error.message)
       return
     }
-    if (mode === 'signup') {
-      setMessage("Account creato. Controlla l'email per confermare l'accesso.")
-      return
-    }
-    window.location.assign('/')
+    window.location.assign(new URL('./', window.location.href).toString())
   }
 
   return (
