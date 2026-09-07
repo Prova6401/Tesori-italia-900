@@ -76,6 +76,10 @@ function splitCsvList(value: string) {
   return value.split(/[|\n;,]+/).map((item) => item.trim()).filter(Boolean)
 }
 
+function isImageColumn(column: string) {
+  return /pic\s*url|image|img|foto|immagin/i.test(column)
+}
+
 declare global {
   interface Window {
     Papa?: {
@@ -87,6 +91,7 @@ declare global {
 
 const FALLBACK_IMAGE = 'https://www.svgrepo.com/show/508699/landscape-placeholder.svg'
 const ZIP_IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|gif|avif)$/i
+const PRODUCTS_CACHE_KEY = 'tesori-italia-products-v1'
 
 function normalizeTitle(value: string) {
   return value.toLocaleLowerCase().trim().replace(/\s+/g, ' ')
@@ -109,6 +114,36 @@ async function readStoredProducts(): Promise<Product[]> {
     offset += pageSize
   }
   return products
+}
+
+function readProductsCache(): Product[] | null {
+  try {
+    const raw = window.localStorage.getItem(PRODUCTS_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return null
+    return parsed.filter((product): product is Product => {
+      if (!product || typeof product !== 'object') return false
+      const item = product as Partial<Product>
+      return typeof item.id === 'string'
+        && typeof item.title === 'string'
+        && typeof item.price === 'number'
+        && typeof item.quantity === 'number'
+        && typeof item.category === 'string'
+        && Array.isArray(item.images)
+        && Array.isArray(item.variants)
+    })
+  } catch {
+    return null
+  }
+}
+
+function writeProductsCache(products: Product[]) {
+  try {
+    window.localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(products))
+  } catch {
+    // La cache è solo un acceleratore: Supabase resta la fonte dati principale.
+  }
 }
 
 async function writeStoredProducts(products: Product[]) {
@@ -155,7 +190,10 @@ function normalizeRows(rows: CsvRow[], mapping: CsvMapping): Product[] {
     const sourceId = value('id')
     const id = sourceId || `custom-${Date.now()}-${rowIndex}-${Math.random().toString(36).slice(2, 8)}`
     const price = parseNumber(value('price'))
-    const images = splitCsvList(value('images'))
+    const imageValues = Object.entries(row)
+      .filter(([column]) => column === mapping.images || isImageColumn(column))
+      .map(([, image]) => image)
+    const images = [...new Set(imageValues.flatMap(splitCsvList))]
     const variants = splitCsvList(value('variants'))
     const existing = grouped.get(id)
     if (existing) {
@@ -235,17 +273,26 @@ export default function Page() {
   const customCsvRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    let active = true
+    const cached = readProductsCache()
+    if (cached) setProducts(cached)
+
     void (async () => {
       try {
         const stored = await readStoredProducts()
+        if (!active) return
         setProducts(stored)
+        writeProductsCache(stored)
       } catch (error) {
+        if (!active) return
         const supabaseError = error as { code?: string }
         setNotice(supabaseError.code === 'PGRST205'
           ? 'Manca la tabella products su Supabase. Esegui supabase-products.sql nel SQL Editor e ricarica la pagina.'
-          : 'Impossibile caricare gli articoli online. Verifica Supabase e riprova.')
+          : cached ? 'Mostro gli ultimi annunci salvati. Impossibile aggiornare Supabase in questo momento.' : 'Impossibile caricare gli articoli online. Verifica Supabase e riprova.')
       }
     })()
+
+    return () => { active = false }
   }, [])
 
   useEffect(() => {
@@ -307,12 +354,17 @@ export default function Page() {
 
   const persist = useCallback((next: Product[]) => {
     setProducts(next)
+    writeProductsCache(next)
     void writeStoredProducts(next).catch(() => setNotice('Impossibile pubblicare gli articoli su Supabase.'))
   }, [])
 
   const updateProduct = useCallback(async (updated: Product) => {
     if (!canManage) return
-    setProducts((current) => current.map((product) => product.id === updated.id ? updated : product))
+    setProducts((current) => {
+      const next = current.map((product) => product.id === updated.id ? updated : product)
+      writeProductsCache(next)
+      return next
+    })
     try { await writeStoredProducts([updated]); setSelected(updated) } catch { setNotice('Impossibile salvare la modifica su Supabase.') }
   }, [canManage])
 
@@ -321,7 +373,11 @@ export default function Page() {
     if (!window.confirm(`Eliminare “${product.title}”?`)) return
     try {
       await deleteStoredProducts([product.id])
-      setProducts((current) => current.filter((item) => item.id !== product.id))
+      setProducts((current) => {
+        const next = current.filter((item) => item.id !== product.id)
+        writeProductsCache(next)
+        return next
+      })
       setSelected(null)
       setSelectedIds((current) => current.filter((id) => id !== product.id))
       setNotice('Annuncio eliminato.')
@@ -333,7 +389,11 @@ export default function Page() {
     if (!window.confirm(`Eliminare ${selectedIds.length} annunci selezionati?`)) return
     try {
       await deleteStoredProducts(selectedIds)
-      setProducts((current) => current.filter((product) => !selectedIds.includes(product.id)))
+      setProducts((current) => {
+        const next = current.filter((product) => !selectedIds.includes(product.id))
+        writeProductsCache(next)
+        return next
+      })
       setSelectedIds([]); setIsBulkEditOpen(false); setNotice('Annunci eliminati.')
     } catch { setNotice('Impossibile eliminare gli annunci selezionati.') }
   }
@@ -341,7 +401,11 @@ export default function Page() {
   async function applyBulkEdit(changes: { category?: string; price?: number; quantity?: number }) {
     if (!canManage || !selectedProducts.length) return
     const updated = selectedProducts.map((product) => ({ ...product, ...(changes.category ? { category: changes.category } : {}), ...(changes.price !== undefined ? { price: changes.price } : {}), ...(changes.quantity !== undefined ? { quantity: changes.quantity } : {}) }))
-    setProducts((current) => current.map((product) => updated.find((item) => item.id === product.id) || product))
+    setProducts((current) => {
+      const next = current.map((product) => updated.find((item) => item.id === product.id) || product)
+      writeProductsCache(next)
+      return next
+    })
     try { await writeStoredProducts(updated); setSelectedIds([]); setIsBulkEditOpen(false); setNotice(`${updated.length} annunci aggiornati.`) } catch { setNotice('Impossibile applicare le modifiche di gruppo.') }
   }
 
@@ -499,7 +563,7 @@ export default function Page() {
     if (!canManage) { setNotice('Solo gli account manage possono modificare gli articoli.'); return }
     if (!window.confirm('Rimuovere definitivamente gli articoli salvati?')) return
     await clearStoredProducts().then(() => {
-      setProducts([]); setSelected(null); setNotice('Articoli rimossi dalla vetrina.')
+      setProducts([]); writeProductsCache([]); setSelected(null); setNotice('Articoli rimossi dalla vetrina.')
     }).catch(() => setNotice('Impossibile rimuovere gli articoli da Supabase.'))
   }
 
