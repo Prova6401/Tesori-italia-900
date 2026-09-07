@@ -667,6 +667,10 @@ main.site-dark .catalog-hero-stats span { color: #d1d5db; border-color: #d9684b;
 main.site-dark .catalog-hero-stats strong { color: #f5f5f7; }
 main.site-dark .catalog-hero-stats small { color: #a1a1a6; }
 .desktop-control-modal-dark .desktop-control-card > .view-panel { color: #f5f5f7; background: transparent; }
+.desktop-control-modal-dark .desktop-control-card { color: #f5f5f7; border-color: #3a3d47; background: #22242a; box-shadow: 12px 12px 0 rgb(0 0 0 / 32%); }
+.desktop-control-modal-dark .desktop-control-heading { border-color: #3a3d47; }
+.desktop-control-modal-dark .desktop-control-heading > button { color: #d1d5db; border-color: #3a3d47; background: #18191d; }
+.desktop-control-modal-dark .desktop-control-heading > button:hover { color: #ff8b78; border-color: #ff8b78; }
 .desktop-control-modal-dark .view-panel > label,
 .desktop-control-modal-dark .view-panel-group { color: #d1d5db; }
 .desktop-control-modal-dark .view-panel select { color: #f5f5f7; border-color: #3a3d47; background: #18191d; }
